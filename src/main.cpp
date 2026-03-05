@@ -111,13 +111,25 @@ void handleRoot() {
   html += "Temp: " + String((int)outTemp) + " &deg;C<br>Feuchte: " + String((int)outHum) + " %</div>";
   
   html += "<div class='card' style='text-align: center;'><h2>Status</h2>";
-  if(airQualityStatus == 1) html += "<div class='ampel'>🟢 Gute Luft</div>";
-  else if(airQualityStatus == 2) html += "<div class='ampel'>🟡 Mäßig</div>";
-  else if(airQualityStatus == 3) html += "<div class='ampel'>🔴 Zu Heiß</div>";
-  else html += "<div class='ampel'>🚨 Gas Alarm!</div>";
   
+  // Ampel-Logik mit bedingtem Bild
+  if(airQualityStatus == 1) {
+    html += "<div class='ampel'>🟢 Gute Luft</div>";
+  } else if(airQualityStatus == 2) {
+    html += "<div class='ampel'>🟡 Mäßig</div>";
+  } else if(airQualityStatus == 3) {
+    html += "<div class='ampel'>🔴 Zu Heiß</div>";
+  } else {
+    html += "<div class='ampel'>🚨 Gas Alarm!</div>";
+    // NEU: Das GIF wird genau hier eingebaut (mittig, abgerundete Ecken)
+    html += "<br><img src='https://media.tenor.com/7p-Jnh69pqsAAAAe/alarm-german.png' style='width:100%; max-width:250px; border-radius:10px; margin-top:15px;' alt='ALARM'>";
+  }
+  
+  // Etwas Abstand nach oben für das Fenster-Icon
+  html += "<div style='margin-top: 15px;'>";
   if(windowOpen) html += "<div class='ampel'>🪟 Fenster ist OFFEN</div>";
   else html += "<div class='ampel'>🚪 Fenster ist ZU</div>";
+  html += "</div>";
   
   if(manualOverride) html += "<p><em>Manueller Modus aktiv</em></p>";
   html += "</div>";
