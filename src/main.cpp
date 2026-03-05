@@ -21,6 +21,9 @@
 #define LED_G 26
 #define LED_B 25
 
+// Buzzer Pin
+#define BUZZER_PIN 22 
+
 // Display Pins (SPI)
 #define TFT_CS    5
 #define TFT_RST   17
@@ -53,7 +56,7 @@ int gasValue = 0;
 bool windowOpen = false;
 bool manualOverride = false;
 
-// 1 = Grün, 2 = Gelb (ab 24°C), 3 = Rot (ab 28°C), 4 = Gas (Rot blinkend)
+// 1 = Grün, 2 = Gelb (ab 24°C), 3 = Rot (ab 28°C), 4 = Gas (Rot blinkend + Piepen)
 int airQualityStatus = 1; 
 
 unsigned long lastApiCall = 0;
@@ -102,7 +105,6 @@ void handleRoot() {
   html += "<h1>Air-Control-System Weiz</h1>";
   
   html += "<div class='card'><h2>Innenraum</h2>";
-  // Anzeige als ganze Zahl (int) um die .00 zu entfernen
   html += "Temp: " + String((int)inTemp) + " &deg;C<br>Feuchte: " + String((int)inHum) + " %</div>";
   
   html += "<div class='card'><h2>Außen (Wetter API)</h2>";
@@ -124,7 +126,7 @@ void handleRoot() {
   html += "<p>🟢 <b>Grün:</b> Alles im Lot (Temp < 24&deg;C).</p>";
   html += "<p>🟡 <b>Gelb:</b> Es wird warm (Temp &ge; 24&deg;C).</p>";
   html += "<p>🔴 <b>Rot:</b> Zu heiß (Temp &ge; 28&deg;C).</p>";
-  html += "<p>🚨 <b>Blinkend Rot:</b> Gas/Rauch erkannt!</p>";
+  html += "<p>🚨 <b>Blinkend Rot + Ton:</b> Gas/Rauch erkannt!</p>";
   html += "<hr>";
   html += "<p><b>MQ-2 Sensorwert:</b> " + String(gasValue) + " / 4095</p>";
   html += "</div>";
@@ -137,6 +139,8 @@ void fetchWeatherData() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(weatherApiUrl);
+    
+    // Wichtiger Headereintrag für API-Calls
     http.addHeader("Authorization", "Bearer DEIN_API_TOKEN_PLATZHALTER"); 
     
     int httpCode = http.GET();
@@ -158,14 +162,20 @@ void setup() {
   pinMode(JOYSTICK_BTN, INPUT_PULLUP);
   pinMode(LED_R, OUTPUT); pinMode(LED_G, OUTPUT); pinMode(LED_B, OUTPUT);
   
-  dht.begin();
-  myStepper.setSpeed(10); 
+  // Buzzer initialisieren und stumm schalten
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW); 
   
-  // Display initialisieren
+  dht.begin();
+  myStepper.setSpeed(15); // Motor etwas schneller gemacht
+  
+  // --- DER TRICK GEGEN DEN DISPLAY-SCHNEE ---
+  tft.initR(INITR_BLACKTAB); 
+  tft.fillScreen(ST77XX_BLACK); 
   tft.initR(INITR_144GREENTAB); 
   tft.setRotation(3); 
+  // ------------------------------------------
   
-  tft.fillScreen(ST77XX_BLACK);
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
   
@@ -189,20 +199,23 @@ void loop() {
   server.handleClient();
   unsigned long currentMillis = millis();
   
-  // --- 1. LED ANIMATION (Fading & Blinken) ---
+  // --- 1. LED & BUZZER ANIMATION (Fading & Blinken) ---
   if (currentMillis - lastLedUpdate >= 10) {
     lastLedUpdate = currentMillis;
 
     if (airQualityStatus == 4) { // Stufe 4 = GAS ALARM
-      // Alarm-Modus: Rotes Blinken (500ms an, 500ms aus)
+      // Alarm-Modus: Rotes Blinken und Piepen (500ms an, 500ms aus)
       if ((currentMillis / 500) % 2 == 0) {
         analogWrite(LED_R, 255); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
+        digitalWrite(BUZZER_PIN, HIGH); // Buzzer AN
       } else {
         analogWrite(LED_R, 0); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
+        digitalWrite(BUZZER_PIN, LOW); // Buzzer AUS
       }
-      // Werte synchronisieren
       currentR = 255; currentG = 0; currentB = 0;
     } else {
+      digitalWrite(BUZZER_PIN, LOW); // Sicherstellen, dass der Buzzer still ist
+      
       // Fading-Modus für weiche Übergänge bei normalen Farben
       if (currentR < targetR) currentR += 2; else if (currentR > targetR) currentR -= 2;
       if (currentG < targetG) currentG += 2; else if (currentG > targetG) currentG -= 2;
@@ -226,7 +239,7 @@ void loop() {
     inHum = dht.readHumidity();
     gasValue = analogRead(MQ2_PIN);
     
-    // NEUE STATUS LOGIK
+    // STATUS LOGIK
     if (gasValue > 3000) { 
       airQualityStatus = 4; // Gas (Blinken wird oben gesteuert)
     } else if (inTemp >= 28.0) {
@@ -243,7 +256,6 @@ void loop() {
     // Display Update
     tft.fillScreen(ST77XX_BLACK);
     tft.setCursor(0, 10);
-    // Anzeige als ganze Zahl (int) um die .00 zu entfernen
     tft.print("IN Temp: "); tft.print((int)inTemp); tft.println(" C");
     tft.print("IN Hum:  "); tft.print((int)inHum); tft.println(" %");
     tft.println();
@@ -273,7 +285,7 @@ void loop() {
   // --- 4. JOYSTICK STEUERUNG ---
   if (digitalRead(JOYSTICK_BTN) == LOW) {
     manualOverride = !manualOverride; 
-    delay(300); 
+    delay(300); // Entprellen
   }
 
   if (manualOverride) {
