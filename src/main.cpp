@@ -156,6 +156,7 @@ void setup() {
   
   // Display initialisieren
   tft.initR(INITR_144GREENTAB); 
+  tft.setRotation(3); // NEU: Dreht das Bild (Werte 0 bis 3 ausprobieren!)
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
