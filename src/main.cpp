@@ -11,12 +11,12 @@
 // --- PIN-DEFINITIONEN ---
 #define DHTPIN 4
 #define DHTTYPE DHT11
-#define MQ2_PIN 34       // Umbenannt auf MQ2 (war MQ5)
+#define MQ2_PIN 34
 #define JOYSTICK_X 35
 #define JOYSTICK_Y 32
 #define JOYSTICK_BTN 33
 
-// RGB Pins (Rot und Blau getauscht)
+// RGB Pins
 #define LED_R 27 
 #define LED_G 26
 #define LED_B 25
@@ -26,20 +26,20 @@
 #define TFT_RST   17
 #define TFT_DC    16
 
-// Stepper Pins
+// Stepper Pins 
 #define IN1 13
 #define IN2 12
 #define IN3 14
-#define IN4 27
+#define IN4 15
 
 // --- EINSTELLUNGEN ---
 const char* ssid = "HTL-Weiz";
 const char* password = "HTL-Weiz";
 
-// Open-Meteo API für Weiz (47.2185, 15.6214)
+// Open-Meteo API für Weiz
 const char* weatherApiUrl = "http://api.open-meteo.com/v1/forecast?latitude=47.2185&longitude=15.6214&current=temperature_2m,relative_humidity_2m";
 
-const int STEPS_PER_REV = 2048; // Für 28BYJ-48
+const int STEPS_PER_REV = 2048; 
 Stepper myStepper(STEPS_PER_REV, IN1, IN3, IN2, IN4);
 
 DHT dht(DHTPIN, DHTTYPE);
@@ -52,34 +52,41 @@ float outTemp = 0.0, outHum = 0.0;
 int gasValue = 0;
 bool windowOpen = false;
 bool manualOverride = false;
-int airQualityStatus = 1; // 1 = Grün, 2 = Gelb, 3 = Rot
+
+// 1 = Grün, 2 = Gelb (ab 24°C), 3 = Rot (ab 28°C), 4 = Gas (Rot blinkend)
+int airQualityStatus = 1; 
+
 unsigned long lastApiCall = 0;
 unsigned long lastSensorRead = 0;
+unsigned long lastLedUpdate = 0;
+
+// Fading Variablen für die LED
+float currentR = 0, currentG = 255, currentB = 0;
+int targetR = 0, targetG = 255, targetB = 0;
 
 // --- HILFSFUNKTIONEN ---
 
-// Berechnung der absoluten Luftfeuchtigkeit
 float calculateAbsoluteHumidity(float temp, float hum) {
   float eSaturation = 6.112 * exp((17.67 * temp) / (temp + 243.5));
   return (eSaturation * hum * 2.1674) / (273.15 + temp);
 }
 
-void setRGB(int r, int g, int b) {
-  analogWrite(LED_R, r);
-  analogWrite(LED_G, g);
-  analogWrite(LED_B, b);
+// Setzt nur die Zielwerte, das Fading passiert im Loop
+void setTargetRGB(int r, int g, int b) {
+  targetR = r;
+  targetG = g;
+  targetB = b;
 }
 
 void moveWindow(bool openWindow) {
-  if (windowOpen == openWindow) return; // Nichts tun, wenn Zustand bereits erreicht
+  if (windowOpen == openWindow) return; 
   
   if (openWindow) {
-    myStepper.step(STEPS_PER_REV / 2); // Halbe Umdrehung auf
+    myStepper.step(STEPS_PER_REV / 2); 
   } else {
-    myStepper.step(-STEPS_PER_REV / 2); // Halbe Umdrehung zu
+    myStepper.step(-STEPS_PER_REV / 2); 
   }
   
-  // Motor stromlos schalten, um Hitze zu vermeiden
   digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
   
@@ -95,15 +102,17 @@ void handleRoot() {
   html += "<h1>Air-Control-System Weiz</h1>";
   
   html += "<div class='card'><h2>Innenraum</h2>";
-  html += "Temp: " + String(inTemp) + " &deg;C<br>Feuchte: " + String(inHum) + " %</div>";
+  // Anzeige als ganze Zahl (int) um die .00 zu entfernen
+  html += "Temp: " + String((int)inTemp) + " &deg;C<br>Feuchte: " + String((int)inHum) + " %</div>";
   
   html += "<div class='card'><h2>Außen (Wetter API)</h2>";
-  html += "Temp: " + String(outTemp) + " &deg;C<br>Feuchte: " + String(outHum) + " %</div>";
+  html += "Temp: " + String((int)outTemp) + " &deg;C<br>Feuchte: " + String((int)outHum) + " %</div>";
   
   html += "<div class='card' style='text-align: center;'><h2>Status</h2>";
   if(airQualityStatus == 1) html += "<div class='ampel'>🟢 Gute Luft</div>";
   else if(airQualityStatus == 2) html += "<div class='ampel'>🟡 Mäßig</div>";
-  else html += "<div class='ampel'>🔴 Kritisch / Gas!</div>";
+  else if(airQualityStatus == 3) html += "<div class='ampel'>🔴 Zu Heiß</div>";
+  else html += "<div class='ampel'>🚨 Gas Alarm!</div>";
   
   if(windowOpen) html += "<div class='ampel'>🪟 Fenster ist OFFEN</div>";
   else html += "<div class='ampel'>🚪 Fenster ist ZU</div>";
@@ -111,14 +120,13 @@ void handleRoot() {
   if(manualOverride) html += "<p><em>Manueller Modus aktiv</em></p>";
   html += "</div>";
 
-  // NEU: Legende und Sensorwert für die Kalibrierung
   html += "<div class='card'><h2>Legende & Infos</h2>";
-  html += "<p>🟢 <b>Grün:</b> Alles im Lot (Temp < 25&deg;C, Feuchte < 60%).</p>";
-  html += "<p>🟡 <b>Gelb:</b> Zu warm oder feucht (Lüften erforderlich).</p>";
-  html += "<p>🔴 <b>Rot:</b> Gas/Rauch erkannt! Fenster öffnet sich.</p>";
+  html += "<p>🟢 <b>Grün:</b> Alles im Lot (Temp < 24&deg;C).</p>";
+  html += "<p>🟡 <b>Gelb:</b> Es wird warm (Temp &ge; 24&deg;C).</p>";
+  html += "<p>🔴 <b>Rot:</b> Zu heiß (Temp &ge; 28&deg;C).</p>";
+  html += "<p>🚨 <b>Blinkend Rot:</b> Gas/Rauch erkannt!</p>";
   html += "<hr>";
-  html += "<p><b>MQ-2 Sensorwert:</b> " + String(gasValue) + " / 4095<br>";
-  html += "<small>(Nutze diesen Wert, um das Rädchen am <br>Sensor an die frische Luft anzupassen)</small></p>";
+  html += "<p><b>MQ-2 Sensorwert:</b> " + String(gasValue) + " / 4095</p>";
   html += "</div>";
 
   html += "</body></html>";
@@ -129,7 +137,7 @@ void fetchWeatherData() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(weatherApiUrl);
-    http.addHeader("Authorization", "Bearer DEIN_API_TOKEN_PLATZHALTER"); // Token bleibt erhalten
+    http.addHeader("Authorization", "Bearer DEIN_API_TOKEN_PLATZHALTER"); 
     
     int httpCode = http.GET();
     if (httpCode == HTTP_CODE_OK) {
@@ -146,91 +154,126 @@ void fetchWeatherData() {
 void setup() {
   Serial.begin(115200);
   
-  // Pins initialisieren
   pinMode(MQ2_PIN, INPUT);
   pinMode(JOYSTICK_BTN, INPUT_PULLUP);
   pinMode(LED_R, OUTPUT); pinMode(LED_G, OUTPUT); pinMode(LED_B, OUTPUT);
   
   dht.begin();
-  myStepper.setSpeed(10); // 10 RPM
+  myStepper.setSpeed(10); 
   
   // Display initialisieren
   tft.initR(INITR_144GREENTAB); 
-  tft.setRotation(3); // NEU: Dreht das Bild (Werte 0 bis 3 ausprobieren!)
+  tft.setRotation(3); 
+  
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
   
-  // WLAN verbinden
   WiFi.begin(ssid, password);
   Serial.print("Verbinde mit WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  // IP-Adresse im Seriellen Monitor ausgeben
-  Serial.println("");
-  Serial.println("WiFi verbunden!");
+  Serial.println("\nWiFi verbunden!");
   Serial.print("IP-Adresse: ");
   Serial.println(WiFi.localIP()); 
   
   server.on("/", handleRoot);
   server.begin();
   
-  fetchWeatherData(); // Initiale Wetterdaten laden
+  fetchWeatherData(); 
 }
 
 void loop() {
   server.handleClient();
   unsigned long currentMillis = millis();
   
-  // 1. Sensoren auslesen (alle 2 Sekunden)
+  // --- 1. LED ANIMATION (Fading & Blinken) ---
+  if (currentMillis - lastLedUpdate >= 10) {
+    lastLedUpdate = currentMillis;
+
+    if (airQualityStatus == 4) { // Stufe 4 = GAS ALARM
+      // Alarm-Modus: Rotes Blinken (500ms an, 500ms aus)
+      if ((currentMillis / 500) % 2 == 0) {
+        analogWrite(LED_R, 255); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
+      } else {
+        analogWrite(LED_R, 0); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
+      }
+      // Werte synchronisieren
+      currentR = 255; currentG = 0; currentB = 0;
+    } else {
+      // Fading-Modus für weiche Übergänge bei normalen Farben
+      if (currentR < targetR) currentR += 2; else if (currentR > targetR) currentR -= 2;
+      if (currentG < targetG) currentG += 2; else if (currentG > targetG) currentG -= 2;
+      if (currentB < targetB) currentB += 2; else if (currentB > targetB) currentB -= 2;
+
+      // Toleranz abfangen
+      if (abs(currentR - targetR) < 2) currentR = targetR;
+      if (abs(currentG - targetG) < 2) currentG = targetG;
+      if (abs(currentB - targetB) < 2) currentB = targetB;
+
+      analogWrite(LED_R, (int)currentR);
+      analogWrite(LED_G, (int)currentG);
+      analogWrite(LED_B, (int)currentB);
+    }
+  }
+
+  // --- 2. SENSOREN AUSLESEN ---
   if (currentMillis - lastSensorRead >= 2000) {
     lastSensorRead = currentMillis;
     inTemp = dht.readTemperature();
     inHum = dht.readHumidity();
     gasValue = analogRead(MQ2_PIN);
     
-    // Status bewerten (Ampel)
-    // SCHWELLENWERT ERHÖHT AUF 3000
+    // NEUE STATUS LOGIK
     if (gasValue > 3000) { 
-      airQualityStatus = 3; // Rot
-      setRGB(255, 0, 0);
-    } else if (inHum > 60.0 || inTemp > 25.0) {
+      airQualityStatus = 4; // Gas (Blinken wird oben gesteuert)
+    } else if (inTemp >= 28.0) {
+      airQualityStatus = 3; // Durchgehend Rot
+      setTargetRGB(255, 0, 0); 
+    } else if (inTemp >= 24.0 || inHum > 60.0) {
       airQualityStatus = 2; // Gelb
-      setRGB(255, 255, 0);
+      setTargetRGB(255, 255, 0); 
     } else {
       airQualityStatus = 1; // Grün
-      setRGB(0, 255, 0);
+      setTargetRGB(0, 255, 0);
     }
     
     // Display Update
     tft.fillScreen(ST77XX_BLACK);
     tft.setCursor(0, 10);
-    tft.print("IN Temp: "); tft.print(inTemp); tft.println(" C");
-    tft.print("IN Hum:  "); tft.print(inHum); tft.println(" %");
+    // Anzeige als ganze Zahl (int) um die .00 zu entfernen
+    tft.print("IN Temp: "); tft.print((int)inTemp); tft.println(" C");
+    tft.print("IN Hum:  "); tft.print((int)inHum); tft.println(" %");
     tft.println();
-    tft.print("OUT Temp:"); tft.print(outTemp); tft.println(" C");
-    tft.print("OUT Hum: "); tft.print(outHum); tft.println(" %");
+    tft.print("OUT Temp:"); tft.print((int)outTemp); tft.println(" C");
+    tft.print("OUT Hum: "); tft.print((int)outHum); tft.println(" %");
     tft.println();
+    
     tft.print("Status: ");
     if(airQualityStatus == 1) tft.setTextColor(ST77XX_GREEN);
     else if(airQualityStatus == 2) tft.setTextColor(ST77XX_YELLOW);
     else tft.setTextColor(ST77XX_RED);
-    tft.println(airQualityStatus == 1 ? "GUT" : (airQualityStatus == 2 ? "OKAY" : "KRITISCH"));
+    
+    if(airQualityStatus == 1) tft.println("GUT");
+    else if(airQualityStatus == 2) tft.println("WARM / OKAY");
+    else if(airQualityStatus == 3) tft.println("ZU HEISS");
+    else tft.println("GAS ALARM");
+    
     tft.setTextColor(ST77XX_WHITE);
   }
 
-  // 2. Wetter API abfragen (alle 15 Minuten)
+  // --- 3. WETTER API ---
   if (currentMillis - lastApiCall >= 900000) {
     lastApiCall = currentMillis;
     fetchWeatherData();
   }
 
-  // 3. Joystick Manuelle Steuerung
+  // --- 4. JOYSTICK STEUERUNG ---
   if (digitalRead(JOYSTICK_BTN) == LOW) {
-    manualOverride = !manualOverride; // Modus umschalten
-    delay(300); // Entprellen
+    manualOverride = !manualOverride; 
+    delay(300); 
   }
 
   if (manualOverride) {
@@ -241,22 +284,28 @@ void loop() {
       moveWindow(false);
     }
   } else {
-    // 4. Automatische Logik (Algorithmus)
+    // --- 5. SCHLAUE LÜFTUNGSLOGIK ---
     if (gasValue > 3000) {
-      // Notfallmodus: Immer öffnen
-      moveWindow(true);
+      moveWindow(true); // Notfall: Immer auf!
     } else {
       float inAH = calculateAbsoluteHumidity(inTemp, inHum);
       float outAH = calculateAbsoluteHumidity(outTemp, outHum);
       
-      // Lüften, wenn drinnen zu feucht (>60%) UND draußen absolut trockener
+      bool needToOpen = windowOpen; 
+      
       if (inHum > 60.0 && outAH < inAH) {
-        moveWindow(true);
-      } 
-      // Schließen, wenn Feuchtigkeit in Ordnung oder draußen feuchter
-      else if (inHum <= 55.0 || outAH > inAH) {
-        moveWindow(false);
+        needToOpen = true; // Entfeuchten
+      } else if (inTemp >= 24.0 && outTemp < inTemp && outTemp > 10.0) {
+        needToOpen = true; // Kühlen 
       }
+      
+      if (outAH >= inAH && outTemp >= inTemp) {
+        needToOpen = false; // Draußen schwül und heiß -> zu bleiben!
+      } else if (inHum <= 55.0 && inTemp < 24.0) {
+        needToOpen = false; // Alles im Wohlfühlbereich -> zu machen!
+      }
+      
+      moveWindow(needToOpen);
     }
   }
 }
