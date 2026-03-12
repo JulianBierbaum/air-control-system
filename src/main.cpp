@@ -37,7 +37,7 @@
 const char* ssid = "HTL-Weiz";
 const char* password = "HTL-Weiz";
 
-// Open-Meteo API für Weiz
+// Open-Meteo API for Weiz, Austria
 const char* weatherApiUrl = "http://api.open-meteo.com/v1/forecast?latitude=47.2185&longitude=15.6214&current=temperature_2m,relative_humidity_2m";
 
 const int STEPS_PER_REV = 2048; 
@@ -51,9 +51,20 @@ float inTemp = 0.0, inHum = 0.0;
 float outTemp = 0.0, outHum = 0.0;
 int gasValue = 0;
 bool windowOpen = false;
+bool targetWindowOpen = false; // Target state for non-blocking movement
 bool manualOverride = false;
 
-// 1 = Grün, 2 = Gelb (ab 24°C), 3 = Rot (ab 28°C), 4 = Gas (Rot blinkend + Piepen)
+// Non-blocking motor variables
+int currentMotorStep = 0;
+int targetMotorStep = 0;
+unsigned long lastStepTime = 0;
+const int STEP_DELAY = 2; // ms between steps
+
+// Hysteresis: Minimum time (2 minutes) to stay in one position
+unsigned long lastWindowStateChange = 0;
+const unsigned long MIN_WINDOW_HOLD_TIME = 120000; 
+
+// 1 = Green, 2 = Yellow (from 24°C), 3 = Red (from 28°C), 4 = Gas (Blinking Red + Beeping)
 int airQualityStatus = 1; 
 
 unsigned long lastApiCall = 0;
@@ -65,7 +76,7 @@ int targetR = 0, targetG = 255, targetB = 0;
 
 
 float calculateAbsoluteHumidity(float temp, float hum) {
-  //Magnus-Formel
+  // Magnus formula
   float saturation = 6.112 * exp((17.67 * temp) / (temp + 243.5));
   return (saturation * hum * 2.1674) / (273.15 + temp);
 }
@@ -76,19 +87,43 @@ void setTargetRGB(int r, int g, int b) {
   targetB = b;
 }
 
-void moveWindow(bool openWindow) {
-  if (windowOpen == openWindow) return; 
+// Sets the target state of the window (Open or Closed)
+void setWindowTarget(bool open, bool ignoreTimer = false) {
+  if (targetWindowOpen == open) return; // Already moving to this target
   
-  if (openWindow) {
-    myStepper.step(STEPS_PER_REV / 4); 
-  } else {
-    myStepper.step(-STEPS_PER_REV / 4); 
+  // Only change if minimum hold time is over OR it's an emergency/manual override
+  if (ignoreTimer || (millis() - lastWindowStateChange >= MIN_WINDOW_HOLD_TIME)) {
+    targetWindowOpen = open;
+    targetMotorStep = open ? (STEPS_PER_REV / 4) : 0;
   }
-  
-  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
-  
-  windowOpen = openWindow;
+}
+
+// Called in loop, performs 1 step per call if needed
+void updateMotor() {
+  if (currentMotorStep == targetMotorStep) return; 
+
+  if (millis() - lastStepTime >= STEP_DELAY) {
+    lastStepTime = millis();
+    
+    if (currentMotorStep < targetMotorStep) {
+      myStepper.step(1);
+      currentMotorStep++;
+    } else {
+      myStepper.step(-1);
+      currentMotorStep--;
+    }
+
+    // Target reached
+    if (currentMotorStep == targetMotorStep) {
+      windowOpen = targetWindowOpen;
+      lastWindowStateChange = millis(); // Reset hysteresis timer
+      
+      // Coils off (Power Save)
+      digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+      digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+      Serial.println(windowOpen ? "Window OPEN" : "Window CLOSED");
+    }
+  }
 }
 
 // --- WEBSERVER ROUTINES ---
@@ -99,43 +134,43 @@ void handleRoot() {
   html += ".ampel{font-size: 50px; text-align: center;} h1{text-align: center;}</style></head><body>";
   html += "<h1>Air-Control-System Weiz</h1>";
   
-  html += "<div class='card'><h2>Innenraum</h2>";
-  html += "Temp: " + String((int)inTemp) + " &deg;C<br>Feuchte: " + String((int)inHum) + " %</div>";
+  html += "<div class='card'><h2>Indoor</h2>";
+  html += "Temp: " + String((int)inTemp) + " &deg;C<br>Humidity: " + String((int)inHum) + " %</div>";
   
-  html += "<div class='card'><h2>Außen (Wetter API)</h2>";
-  html += "Temp: " + String((int)outTemp) + " &deg;C<br>Feuchte: " + String((int)outHum) + " %</div>";
+  html += "<div class='card'><h2>Outdoor (Weather API)</h2>";
+  html += "Temp: " + String((int)outTemp) + " &deg;C<br>Humidity: " + String((int)outHum) + " %</div>";
   
   html += "<div class='card' style='text-align: center;'><h2>Status</h2>";
   
-  // Ampel-Logik mit bedingtem Bild
+  // Status Logic with conditional image
   if(airQualityStatus == 1) {
-    html += "<div class='ampel'>🟢 Gute Luft</div>";
+    html += "<div class='ampel'>🟢 Good Air</div>";
   } else if(airQualityStatus == 2) {
-    html += "<div class='ampel'>🟡 Mäßig</div>";
+    html += "<div class='ampel'>🟡 Moderate</div>";
   } else if(airQualityStatus == 3) {
-    html += "<div class='ampel'>🔴 Zu Heiß</div>";
+    html += "<div class='ampel'>🔴 Too Hot</div>";
   } else {
     html += "<div class='ampel'>🚨 Gas Alarm!</div>";
-    // NEU: Das GIF wird genau hier eingebaut (mittig, abgerundete Ecken)
+    // GIF for alarm (centered, rounded corners)
     html += "<br><img src='https://media.tenor.com/7p-Jnh69pqsAAAAe/alarm-german.png' style='width:100%; max-width:250px; border-radius:10px; margin-top:15px;' alt='ALARM'>";
   }
   
-  // Etwas Abstand nach oben für das Fenster-Icon
+  // Window status icon
   html += "<div style='margin-top: 15px;'>";
-  if(windowOpen) html += "<div class='ampel'>🪟 Fenster ist OFFEN</div>";
-  else html += "<div class='ampel'>🚪 Fenster ist ZU</div>";
+  if(windowOpen) html += "<div class='ampel'>🪟 Window is OPEN</div>";
+  else html += "<div class='ampel'>🚪 Window is CLOSED</div>";
   html += "</div>";
   
-  if(manualOverride) html += "<p><em>Manueller Modus aktiv</em></p>";
+  if(manualOverride) html += "<p><em>Manual Mode Active</em></p>";
   html += "</div>";
 
-  html += "<div class='card'><h2>Legende & Infos</h2>";
-  html += "<p>🟢 <b>Grün:</b> Alles im Lot (Temp < 24&deg;C).</p>";
-  html += "<p>🟡 <b>Gelb:</b> Es wird warm (Temp &ge; 24&deg;C).</p>";
-  html += "<p>🔴 <b>Rot:</b> Zu heiß (Temp &ge; 28&deg;C).</p>";
-  html += "<p>🚨 <b>Blinkend Rot + Ton:</b> Gas/Rauch erkannt!</p>";
+  html += "<div class='card'><h2>Legend & Info</h2>";
+  html += "<p>🟢 <b>Green:</b> Everything fine (Temp < 24&deg;C).</p>";
+  html += "<p>🟡 <b>Yellow:</b> Getting warm (Temp &ge; 24&deg;C).</p>";
+  html += "<p>🔴 <b>Red:</b> Too hot (Temp &ge; 28&deg;C).</p>";
+  html += "<p>🚨 <b>Blinking Red + Sound:</b> Gas/Smoke detected!</p>";
   html += "<hr>";
-  html += "<p><b>MQ-2 Sensorwert:</b> " + String(gasValue) + " / 4095</p>";
+  html += "<p><b>MQ-2 Sensor Value:</b> " + String(gasValue) + " / 4095</p>";
   html += "</div>";
 
   html += "</body></html>";
@@ -147,8 +182,8 @@ void fetchWeatherData() {
     HTTPClient http;
     http.begin(weatherApiUrl);
     
-    // Wichtiger Headereintrag für API-Calls
-    http.addHeader("Authorization", "Bearer DEIN_API_TOKEN_PLATZHALTER"); 
+    // Important header entry for API calls
+    http.addHeader("Authorization", "Bearer YOUR_API_TOKEN_PLACEHOLDER"); 
     
     int httpCode = http.GET();
     if (httpCode == HTTP_CODE_OK) {
@@ -169,14 +204,14 @@ void setup() {
   pinMode(JOYSTICK_BTN, INPUT_PULLUP);
   pinMode(LED_R, OUTPUT); pinMode(LED_G, OUTPUT); pinMode(LED_B, OUTPUT);
   
-  // Buzzer initialisieren und stumm schalten
+  // Initialize buzzer and mute it
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW); 
   
   dht.begin();
-  myStepper.setSpeed(15); // Motor etwas schneller gemacht
+  myStepper.setSpeed(15); // Increased motor speed
   
-  // --- DER TRICK GEGEN DEN DISPLAY-SCHNEE ---
+  // --- FIX FOR DISPLAY STATIC ---
   tft.initR(INITR_BLACKTAB); 
   tft.fillScreen(ST77XX_BLACK); 
   tft.initR(INITR_144GREENTAB); 
@@ -187,13 +222,13 @@ void setup() {
   tft.setTextSize(1);
   
   WiFi.begin(ssid, password);
-  Serial.print("Verbinde mit WiFi");
+  Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi verbunden!");
-  Serial.print("IP-Adresse: ");
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
   Serial.println(WiFi.localIP()); 
   
   server.on("/", handleRoot);
@@ -204,31 +239,32 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  updateMotor(); // Motor moves in background (non-blocking)
   unsigned long currentMillis = millis();
   
-  // --- 1. LED & BUZZER ANIMATION (Fading & Blinken) ---
+  // --- 1. LED & BUZZER ANIMATION (Fading & Blinking) ---
   if (currentMillis - lastLedUpdate >= 10) {
     lastLedUpdate = currentMillis;
 
-    if (airQualityStatus == 4) { // Stufe 4 = GAS ALARM
-      // Alarm-Modus: Rotes Blinken und Piepen (500ms an, 500ms aus)
+    if (airQualityStatus == 4) { // Level 4 = GAS ALARM
+      // Alarm Mode: Red blinking and beeping (500ms on, 500ms off)
       if ((currentMillis / 500) % 2 == 0) {
         analogWrite(LED_R, 255); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
-        digitalWrite(BUZZER_PIN, HIGH); // Buzzer AN
+        digitalWrite(BUZZER_PIN, HIGH); // Buzzer ON
       } else {
         analogWrite(LED_R, 0); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
-        digitalWrite(BUZZER_PIN, LOW); // Buzzer AUS
+        digitalWrite(BUZZER_PIN, LOW); // Buzzer OFF
       }
       currentR = 255; currentG = 0; currentB = 0;
     } else {
-      digitalWrite(BUZZER_PIN, LOW); // Sicherstellen, dass der Buzzer still ist
+      digitalWrite(BUZZER_PIN, LOW); // Ensure buzzer is silent
       
-      // Fading-Modus für weiche Übergänge bei normalen Farben
+      // Fading mode for smooth transitions with normal colors
       if (currentR < targetR) currentR += 2; else if (currentR > targetR) currentR -= 2;
       if (currentG < targetG) currentG += 2; else if (currentG > targetG) currentG -= 2;
       if (currentB < targetB) currentB += 2; else if (currentB > targetB) currentB -= 2;
 
-      // Toleranz abfangen
+      // Handle tolerance
       if (abs(currentR - targetR) < 2) currentR = targetR;
       if (abs(currentG - targetG) < 2) currentG = targetG;
       if (abs(currentB - targetB) < 2) currentB = targetB;
@@ -239,24 +275,24 @@ void loop() {
     }
   }
 
-  // --- 2. SENSOREN AUSLESEN ---
+  // --- 2. READING SENSORS ---
   if (currentMillis - lastSensorRead >= 2000) {
     lastSensorRead = currentMillis;
     inTemp = dht.readTemperature();
     inHum = dht.readHumidity();
     gasValue = analogRead(MQ2_PIN);
     
-    // STATUS LOGIK
+    // STATUS LOGIC
     if (gasValue > 3000) { 
-      airQualityStatus = 4; // Gas (Blinken wird oben gesteuert)
+      airQualityStatus = 4; // Gas (blinking handled above)
     } else if (inTemp >= 28.0) {
-      airQualityStatus = 3; // Durchgehend Rot
+      airQualityStatus = 3; // Solid Red
       setTargetRGB(255, 0, 0); 
     } else if (inTemp >= 24.0 || inHum > 60.0) {
-      airQualityStatus = 2; // Gelb
+      airQualityStatus = 2; // Yellow
       setTargetRGB(255, 255, 0); 
     } else {
-      airQualityStatus = 1; // Grün
+      airQualityStatus = 1; // Green
       setTargetRGB(0, 255, 0);
     }
     
@@ -275,56 +311,56 @@ void loop() {
     else if(airQualityStatus == 2) tft.setTextColor(ST77XX_YELLOW);
     else tft.setTextColor(ST77XX_RED);
     
-    if(airQualityStatus == 1) tft.println("GUT");
+    if(airQualityStatus == 1) tft.println("GOOD");
     else if(airQualityStatus == 2) tft.println("WARM / OKAY");
-    else if(airQualityStatus == 3) tft.println("ZU HEISS");
+    else if(airQualityStatus == 3) tft.println("TOO HOT");
     else tft.println("GAS ALARM");
     
     tft.setTextColor(ST77XX_WHITE);
   }
 
-  // --- 3. WETTER API ---
+  // --- 3. WEATHER API ---
   if (currentMillis - lastApiCall >= 900000) {
     lastApiCall = currentMillis;
     fetchWeatherData();
   }
 
-  // --- 4. JOYSTICK STEUERUNG ---
+  // --- 4. JOYSTICK CONTROL ---
   if (digitalRead(JOYSTICK_BTN) == LOW) {
     manualOverride = !manualOverride; 
-    delay(300); // Entprellen
+    delay(300); // Debounce
   }
 
   if (manualOverride) {
     int yVal = analogRead(JOYSTICK_Y);
-    if (yVal < 1000 && !windowOpen) {
-      moveWindow(true);
-    } else if (yVal > 3000 && windowOpen) {
-      moveWindow(false);
+    if (yVal < 1000) {
+      setWindowTarget(true, true); // Manual: Ignore timer!
+    } else if (yVal > 3000) {
+      setWindowTarget(false, true); // Manual: Ignore timer!
     }
   } else {
-    // --- 5. SCHLAUE LÜFTUNGSLOGIK ---
+    // --- 5. SMART VENTILATION LOGIC ---
     if (gasValue > 3000) {
-      moveWindow(true); // Notfall: Immer auf!
+      setWindowTarget(true, true); // Gas Emergency: Ignore timer!
     } else {
       float inAH = calculateAbsoluteHumidity(inTemp, inHum);
       float outAH = calculateAbsoluteHumidity(outTemp, outHum);
       
-      bool needToOpen = windowOpen; 
+      bool needToOpen = targetWindowOpen; // Start from current target
       
       if (inHum > 60.0 && outAH < inAH) {
-        needToOpen = true; // Entfeuchten
+        needToOpen = true; // Dehumidify
       } else if (inTemp >= 24.0 && outTemp < inTemp && outTemp > 10.0) {
-        needToOpen = true; // Kühlen 
+        needToOpen = true; // Cool 
       }
       
       if (outAH >= inAH && outTemp >= inTemp) {
-        needToOpen = false; // Draußen schwül und heiß -> zu bleiben!
+        needToOpen = false; // Outside humid and hot -> stay closed!
       } else if (inHum <= 55.0 && inTemp < 24.0) {
-        needToOpen = false; // Alles im Wohlfühlbereich -> zu machen!
+        needToOpen = false; // Everything in comfort zone -> close window!
       }
       
-      moveWindow(needToOpen);
+      setWindowTarget(needToOpen); // Normal mode: Respect timer
     }
   }
 }
