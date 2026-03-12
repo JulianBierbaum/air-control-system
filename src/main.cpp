@@ -8,7 +8,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 
-// --- PIN-DEFINITIONEN ---
 #define DHTPIN 4
 #define DHTTYPE DHT11
 #define MQ2_PIN 34
@@ -35,7 +34,6 @@
 #define IN3 14
 #define IN4 15
 
-// --- EINSTELLUNGEN ---
 const char* ssid = "HTL-Weiz";
 const char* password = "HTL-Weiz";
 
@@ -49,7 +47,6 @@ DHT dht(DHTPIN, DHTTYPE);
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 WebServer server(80);
 
-// --- GLOBALE VARIABLEN ---
 float inTemp = 0.0, inHum = 0.0;
 float outTemp = 0.0, outHum = 0.0;
 int gasValue = 0;
@@ -63,18 +60,16 @@ unsigned long lastApiCall = 0;
 unsigned long lastSensorRead = 0;
 unsigned long lastLedUpdate = 0;
 
-// Fading Variablen für die LED
 float currentR = 0, currentG = 255, currentB = 0;
 int targetR = 0, targetG = 255, targetB = 0;
 
-// --- HILFSFUNKTIONEN ---
 
 float calculateAbsoluteHumidity(float temp, float hum) {
-  float eSaturation = 6.112 * exp((17.67 * temp) / (temp + 243.5));
-  return (eSaturation * hum * 2.1674) / (273.15 + temp);
+  //Magnus-Formel
+  float saturation = 6.112 * exp((17.67 * temp) / (temp + 243.5));
+  return (saturation * hum * 2.1674) / (273.15 + temp);
 }
 
-// Setzt nur die Zielwerte, das Fading passiert im Loop
 void setTargetRGB(int r, int g, int b) {
   targetR = r;
   targetG = g;
@@ -85,9 +80,9 @@ void moveWindow(bool openWindow) {
   if (windowOpen == openWindow) return; 
   
   if (openWindow) {
-    myStepper.step(STEPS_PER_REV / 2); 
+    myStepper.step(STEPS_PER_REV / 4); 
   } else {
-    myStepper.step(-STEPS_PER_REV / 2); 
+    myStepper.step(-STEPS_PER_REV / 4); 
   }
   
   digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
