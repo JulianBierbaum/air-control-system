@@ -10,7 +10,7 @@
 
 #define DHTPIN 4
 #define DHTTYPE DHT11
-#define MQ2_PIN 34
+#define MQ2_PIN 34    // Gas sensor
 #define JOYSTICK_X 35
 #define JOYSTICK_Y 32
 #define JOYSTICK_BTN 33
@@ -51,7 +51,7 @@ float inTemp = 0.0, inHum = 0.0;
 float outTemp = 0.0, outHum = 0.0;
 int gasValue = 0;
 bool windowOpen = false;
-bool targetWindowOpen = false; // Target state for non-blocking movement
+bool targetWindowOpen = false;
 bool manualOverride = false;
 
 // Non-blocking motor variables
@@ -60,9 +60,8 @@ int targetMotorStep = 0;
 unsigned long lastStepTime = 0;
 const int STEP_DELAY = 2; // ms between steps
 
-// Hysteresis: Minimum time (2 minutes) to stay in one position
 unsigned long lastWindowStateChange = 0;
-const unsigned long MIN_WINDOW_HOLD_TIME = 120000; 
+const unsigned long MIN_WINDOW_HOLD_TIME = 5000; 
 
 // 1 = Green, 2 = Yellow (from 24°C), 3 = Red (from 28°C), 4 = Gas (Blinking Red + Beeping)
 int airQualityStatus = 1; 
@@ -89,16 +88,14 @@ void setTargetRGB(int r, int g, int b) {
 
 // Sets the target state of the window (Open or Closed)
 void setWindowTarget(bool open, bool ignoreTimer = false) {
-  if (targetWindowOpen == open) return; // Already moving to this target
+  if (targetWindowOpen == open) return;
   
-  // Only change if minimum hold time is over OR it's an emergency/manual override
   if (ignoreTimer || (millis() - lastWindowStateChange >= MIN_WINDOW_HOLD_TIME)) {
     targetWindowOpen = open;
     targetMotorStep = open ? (STEPS_PER_REV / 4) : 0;
   }
 }
 
-// Called in loop, performs 1 step per call if needed
 void updateMotor() {
   if (currentMotorStep == targetMotorStep) return; 
 
@@ -113,12 +110,10 @@ void updateMotor() {
       currentMotorStep--;
     }
 
-    // Target reached
     if (currentMotorStep == targetMotorStep) {
       windowOpen = targetWindowOpen;
-      lastWindowStateChange = millis(); // Reset hysteresis timer
+      lastWindowStateChange = millis();
       
-      // Coils off (Power Save)
       digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
       digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
       Serial.println(windowOpen ? "Window OPEN" : "Window CLOSED");
@@ -126,7 +121,6 @@ void updateMotor() {
   }
 }
 
-// --- WEBSERVER ROUTINES ---
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='10'>";
   html += "<style>body{font-family: Arial; text-align: center; background:#222; color:#fff;}";
@@ -142,7 +136,7 @@ void handleRoot() {
   
   html += "<div class='card' style='text-align: center;'><h2>Status</h2>";
   
-  // Status Logic with conditional image
+  // Status Logic
   if(airQualityStatus == 1) {
     html += "<div class='ampel'>🟢 Good Air</div>";
   } else if(airQualityStatus == 2) {
@@ -151,11 +145,10 @@ void handleRoot() {
     html += "<div class='ampel'>🔴 Too Hot</div>";
   } else {
     html += "<div class='ampel'>🚨 Gas Alarm!</div>";
-    // GIF for alarm (centered, rounded corners)
+    
     html += "<br><img src='https://media.tenor.com/7p-Jnh69pqsAAAAe/alarm-german.png' style='width:100%; max-width:250px; border-radius:10px; margin-top:15px;' alt='ALARM'>";
   }
   
-  // Window status icon
   html += "<div style='margin-top: 15px;'>";
   if(windowOpen) html += "<div class='ampel'>🪟 Window is OPEN</div>";
   else html += "<div class='ampel'>🚪 Window is CLOSED</div>";
@@ -211,16 +204,16 @@ void setup() {
   dht.begin();
   myStepper.setSpeed(15); // Increased motor speed
   
-  // --- FIX FOR DISPLAY STATIC ---
+  // Display Setup
   tft.initR(INITR_BLACKTAB); 
   tft.fillScreen(ST77XX_BLACK); 
   tft.initR(INITR_144GREENTAB); 
   tft.setRotation(3); 
-  // ------------------------------------------
   
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
   
+  // WiFi Verbindung
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -239,15 +232,13 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  updateMotor(); // Motor moves in background (non-blocking)
+  updateMotor();
   unsigned long currentMillis = millis();
   
-  // --- 1. LED & BUZZER ANIMATION (Fading & Blinking) ---
   if (currentMillis - lastLedUpdate >= 10) {
     lastLedUpdate = currentMillis;
 
     if (airQualityStatus == 4) { // Level 4 = GAS ALARM
-      // Alarm Mode: Red blinking and beeping (500ms on, 500ms off)
       if ((currentMillis / 500) % 2 == 0) {
         analogWrite(LED_R, 255); analogWrite(LED_G, 0); analogWrite(LED_B, 0);
         digitalWrite(BUZZER_PIN, HIGH); // Buzzer ON
@@ -275,7 +266,6 @@ void loop() {
     }
   }
 
-  // --- 2. READING SENSORS ---
   if (currentMillis - lastSensorRead >= 2000) {
     lastSensorRead = currentMillis;
     inTemp = dht.readTemperature();
@@ -284,7 +274,7 @@ void loop() {
     
     // STATUS LOGIC
     if (gasValue > 3000) { 
-      airQualityStatus = 4; // Gas (blinking handled above)
+      airQualityStatus = 4; // Gas
     } else if (inTemp >= 28.0) {
       airQualityStatus = 3; // Solid Red
       setTargetRGB(255, 0, 0); 
@@ -296,17 +286,17 @@ void loop() {
       setTargetRGB(0, 255, 0);
     }
     
-    // Display Update
+    // Display update
     tft.fillScreen(ST77XX_BLACK);
     tft.setCursor(0, 10);
-    tft.print("IN Temp: "); tft.print((int)inTemp); tft.println(" C");
-    tft.print("IN Hum:  "); tft.print((int)inHum); tft.println(" %");
+    tft.print("IN Temp:  "); tft.print((int)inTemp); tft.println(" C");
+    tft.print("IN Hum:   "); tft.print((int)inHum); tft.println(" %");
     tft.println();
-    tft.print("OUT Temp:"); tft.print((int)outTemp); tft.println(" C");
-    tft.print("OUT Hum: "); tft.print((int)outHum); tft.println(" %");
+    tft.print("OUT Temp: "); tft.print((int)outTemp); tft.println(" C");
+    tft.print("OUT Hum:  "); tft.print((int)outHum); tft.println(" %");
     tft.println();
     
-    tft.print("Status: ");
+    tft.print("Air Q:    ");
     if(airQualityStatus == 1) tft.setTextColor(ST77XX_GREEN);
     else if(airQualityStatus == 2) tft.setTextColor(ST77XX_YELLOW);
     else tft.setTextColor(ST77XX_RED);
@@ -316,16 +306,29 @@ void loop() {
     else if(airQualityStatus == 3) tft.println("TOO HOT");
     else tft.println("GAS ALARM");
     
+    tft.println();
     tft.setTextColor(ST77XX_WHITE);
+    tft.print("State:    ");
+    if(windowOpen) {
+      tft.println("OPEN");
+    } else {
+      tft.println("CLOSED");
+    }
+
+    tft.println();
+    tft.println("Quality IDX: ");
+    tft.print(String(gasValue) + " / 4095");
+    
+    //tft.setTextColor(ST77XX_WHITE);
   }
 
-  // --- 3. WEATHER API ---
+  // fetch data from the weather API (every 15 minutes)
   if (currentMillis - lastApiCall >= 900000) {
     lastApiCall = currentMillis;
     fetchWeatherData();
   }
 
-  // --- 4. JOYSTICK CONTROL ---
+  // Joystick controll
   if (digitalRead(JOYSTICK_BTN) == LOW) {
     manualOverride = !manualOverride; 
     delay(300); // Debounce
@@ -334,33 +337,34 @@ void loop() {
   if (manualOverride) {
     int yVal = analogRead(JOYSTICK_Y);
     if (yVal < 1000) {
-      setWindowTarget(true, true); // Manual: Ignore timer!
+      setWindowTarget(true, true);
     } else if (yVal > 3000) {
-      setWindowTarget(false, true); // Manual: Ignore timer!
+      setWindowTarget(false, true);
     }
   } else {
-    // --- 5. SMART VENTILATION LOGIC ---
     if (gasValue > 3000) {
-      setWindowTarget(true, true); // Gas Emergency: Ignore timer!
+      setWindowTarget(true, true);
     } else {
       float inAH = calculateAbsoluteHumidity(inTemp, inHum);
       float outAH = calculateAbsoluteHumidity(outTemp, outHum);
       
-      bool needToOpen = targetWindowOpen; // Start from current target
+      bool needToOpen = targetWindowOpen;
       
+      // Open if it's too humid (and drier outside) or too warm (and cooler outside)
       if (inHum > 60.0 && outAH < inAH) {
-        needToOpen = true; // Dehumidify
+        needToOpen = true;
       } else if (inTemp >= 24.0 && outTemp < inTemp && outTemp > 10.0) {
-        needToOpen = true; // Cool 
+        needToOpen = true;
       }
       
+      // Close when condtions outside are worse
       if (outAH >= inAH && outTemp >= inTemp) {
-        needToOpen = false; // Outside humid and hot -> stay closed!
+        needToOpen = false;
       } else if (inHum <= 55.0 && inTemp < 24.0) {
-        needToOpen = false; // Everything in comfort zone -> close window!
+        needToOpen = false;
       }
       
-      setWindowTarget(needToOpen); // Normal mode: Respect timer
+      setWindowTarget(needToOpen);
     }
   }
 }
